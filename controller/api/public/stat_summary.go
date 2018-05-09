@@ -28,6 +28,11 @@ type promResult struct {
 	err  error
 }
 
+type resourceResult struct {
+	res *pb.StatTable
+	err error
+}
+
 const (
 	reqQuery             = "sum(increase(response_total%s[%s])) by (%s, classification)"
 	latencyQuantileQuery = "histogram_quantile(%s, sum(irate(response_latency_ms_bucket%s[%s])) by (le, %s))"
@@ -43,6 +48,9 @@ const (
 
 var promTypes = []promType{promRequests, promLatencyP50, promLatencyP95, promLatencyP99}
 
+// resources to query when Resource.Type is "all"
+var resourceTypes = []string{k8s.Pods, k8s.Deployments, k8s.ReplicationControllers, k8s.Services}
+
 type podCount struct {
 	inMesh uint64
 	total  uint64
@@ -56,17 +64,49 @@ func (s *grpcServer) StatSummary(ctx context.Context, req *pb.StatSummaryRequest
 		return nil, status.Errorf(codes.InvalidArgument, "service only supported as a target on 'from' queries, or as a destination on 'to' queries.")
 	}
 
-	res, err := s.resourceQuery(ctx, req)
-	if err != nil {
-		return nil, util.GRPCError(err)
+	statTables := make([]*pb.StatTable, 0)
+
+	if req.Selector.Resource.Type == "all" {
+		// request stats for all resourceTypes, in parallel
+		resultChan := make(chan resourceResult)
+
+		for _, resource := range resourceTypes {
+			req := &pb.StatSummaryRequest{
+				Selector: &pb.ResourceSelection{
+					Resource: &pb.Resource{
+						Type:      resource,
+						Namespace: req.Selector.Resource.Namespace,
+					},
+					LabelSelector: req.Selector.LabelSelector,
+				},
+				TimeWindow: req.TimeWindow,
+			}
+
+			go func() {
+				resultChan <- s.resourceQuery(ctx, req)
+			}()
+		}
+
+		for i := 0; i < len(resourceTypes); i++ {
+			result := <-resultChan
+			if result.err != nil {
+				return nil, util.GRPCError(result.err)
+			}
+			statTables = append(statTables, result.res)
+		}
+	} else {
+		// get stats for a single resourceType
+		result := s.resourceQuery(ctx, req)
+		if result.err != nil {
+			return nil, util.GRPCError(result.err)
+		}
+		statTables = append(statTables, result.res)
 	}
 
 	rsp := pb.StatSummaryResponse{
 		Response: &pb.StatSummaryResponse_Ok_{ // https://github.com/golang/protobuf/issues/205
 			Ok: &pb.StatSummaryResponse_Ok{
-				StatTables: []*pb.StatTable{
-					res,
-				},
+				StatTables: statTables,
 			},
 		},
 	}
@@ -74,10 +114,10 @@ func (s *grpcServer) StatSummary(ctx context.Context, req *pb.StatSummaryRequest
 	return &rsp, nil
 }
 
-func (s *grpcServer) resourceQuery(ctx context.Context, req *pb.StatSummaryRequest) (*pb.StatTable, error) {
+func (s *grpcServer) resourceQuery(ctx context.Context, req *pb.StatSummaryRequest) resourceResult {
 	objects, err := s.lister.GetObjects(req.Selector.Resource.Namespace, req.Selector.Resource.Type, req.Selector.Resource.Name)
 	if err != nil {
-		return nil, util.GRPCError(err)
+		return resourceResult{res: nil, err: err}
 	}
 
 	// TODO: make these one struct:
@@ -88,28 +128,28 @@ func (s *grpcServer) resourceQuery(ctx context.Context, req *pb.StatSummaryReque
 	for _, object := range objects {
 		key, err := cache.MetaNamespaceKeyFunc(object)
 		if err != nil {
-			return nil, util.GRPCError(err)
+			return resourceResult{res: nil, err: err}
 		}
 		metaObj, err := meta.Accessor(object)
 		if err != nil {
-			return nil, util.GRPCError(err)
+			return resourceResult{res: nil, err: err}
 		}
 
 		objectMap[key] = metaObj
 
 		meshCount, err := s.getMeshedPodCount(object)
 		if err != nil {
-			return nil, util.GRPCError(err)
+			return resourceResult{res: nil, err: err}
 		}
 		meshCountMap[key] = meshCount
 	}
 
 	res, err := s.objectQuery(ctx, req, objectMap, meshCountMap)
 	if err != nil {
-		return nil, util.GRPCError(err)
+		return resourceResult{res: nil, err: err}
 	}
 
-	return res, nil
+	return resourceResult{res: res, err: nil}
 }
 
 func (s *grpcServer) objectQuery(
@@ -171,22 +211,6 @@ func (s *grpcServer) objectQuery(
 			},
 		},
 	}
-
-	// rsp := pb.StatSummaryResponse{
-	// 	Response: &pb.StatSummaryResponse_Ok_{ // https://github.com/golang/protobuf/issues/205
-	// 		Ok: &pb.StatSummaryResponse_Ok{
-	// 			StatTables: []*pb.StatTable{
-	// 				&pb.StatTable{
-	// 					Table: &pb.StatTable_PodGroup_{
-	// 						PodGroup: &pb.StatTable_PodGroup{
-	// 							Rows: rows,
-	// 						},
-	// 					},
-	// 				},
-	// 			},
-	// 		},
-	// 	},
-	// }
 
 	return &rsp, nil
 }
