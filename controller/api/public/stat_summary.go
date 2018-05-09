@@ -56,6 +56,25 @@ func (s *grpcServer) StatSummary(ctx context.Context, req *pb.StatSummaryRequest
 		return nil, status.Errorf(codes.InvalidArgument, "service only supported as a target on 'from' queries, or as a destination on 'to' queries.")
 	}
 
+	res, err := s.resourceQuery(ctx, req)
+	if err != nil {
+		return nil, util.GRPCError(err)
+	}
+
+	rsp := pb.StatSummaryResponse{
+		Response: &pb.StatSummaryResponse_Ok_{ // https://github.com/golang/protobuf/issues/205
+			Ok: &pb.StatSummaryResponse_Ok{
+				StatTables: []*pb.StatTable{
+					res,
+				},
+			},
+		},
+	}
+
+	return &rsp, nil
+}
+
+func (s *grpcServer) resourceQuery(ctx context.Context, req *pb.StatSummaryRequest) (*pb.StatTable, error) {
 	objects, err := s.lister.GetObjects(req.Selector.Resource.Namespace, req.Selector.Resource.Type, req.Selector.Resource.Name)
 	if err != nil {
 		return nil, util.GRPCError(err)
@@ -98,7 +117,7 @@ func (s *grpcServer) objectQuery(
 	req *pb.StatSummaryRequest,
 	objects map[string]metav1.Object,
 	meshCount map[string]*podCount,
-) (*pb.StatSummaryResponse, error) {
+) (*pb.StatTable, error) {
 	rows := make([]*pb.StatTable_PodGroup_Row, 0)
 
 	requestMetrics, err := s.getRequests(ctx, req, req.TimeWindow)
@@ -145,21 +164,29 @@ func (s *grpcServer) objectQuery(
 		rows = append(rows, &row)
 	}
 
-	rsp := pb.StatSummaryResponse{
-		Response: &pb.StatSummaryResponse_Ok_{ // https://github.com/golang/protobuf/issues/205
-			Ok: &pb.StatSummaryResponse_Ok{
-				StatTables: []*pb.StatTable{
-					&pb.StatTable{
-						Table: &pb.StatTable_PodGroup_{
-							PodGroup: &pb.StatTable_PodGroup{
-								Rows: rows,
-							},
-						},
-					},
-				},
+	rsp := pb.StatTable{
+		Table: &pb.StatTable_PodGroup_{
+			PodGroup: &pb.StatTable_PodGroup{
+				Rows: rows,
 			},
 		},
 	}
+
+	// rsp := pb.StatSummaryResponse{
+	// 	Response: &pb.StatSummaryResponse_Ok_{ // https://github.com/golang/protobuf/issues/205
+	// 		Ok: &pb.StatSummaryResponse_Ok{
+	// 			StatTables: []*pb.StatTable{
+	// 				&pb.StatTable{
+	// 					Table: &pb.StatTable_PodGroup_{
+	// 						PodGroup: &pb.StatTable_PodGroup{
+	// 							Rows: rows,
+	// 						},
+	// 					},
+	// 				},
+	// 			},
+	// 		},
+	// 	},
+	// }
 
 	return &rsp, nil
 }
