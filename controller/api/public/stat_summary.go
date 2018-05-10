@@ -58,10 +58,21 @@ type podCount struct {
 }
 
 func (s *grpcServer) StatSummary(ctx context.Context, req *pb.StatSummaryRequest) (*pb.StatSummaryResponse, error) {
-	// special case to check for services as outbound only
-	if req.Selector.Resource.Type == k8s.Services &&
-		req.Outbound.(*pb.StatSummaryRequest_FromResource) == nil {
-		return nil, status.Errorf(codes.InvalidArgument, "service only supported as a target on 'from' queries, or as a destination on 'to' queries.")
+	switch req.Outbound.(type) {
+	case *pb.StatSummaryRequest_ToResource:
+		if req.Outbound.(*pb.StatSummaryRequest_ToResource).ToResource.Type == k8s.All {
+			return nil, status.Errorf(codes.InvalidArgument, "resource type 'all' is not supported as a filter")
+		}
+	case *pb.StatSummaryRequest_FromResource:
+		if req.Outbound.(*pb.StatSummaryRequest_FromResource).FromResource.Type == k8s.All {
+			return nil, status.Errorf(codes.InvalidArgument, "resource type 'all' is not supported as a filter")
+		}
+	default:
+		// special case to check for services as outbound only
+		if req.Selector.Resource.Type == k8s.Services &&
+			req.Outbound.(*pb.StatSummaryRequest_FromResource) == nil {
+			return nil, status.Errorf(codes.InvalidArgument, "service only supported as a target on 'from' queries, or as a destination on 'to' queries.")
+		}
 	}
 
 	statTables := make([]*pb.StatTable, 0)
