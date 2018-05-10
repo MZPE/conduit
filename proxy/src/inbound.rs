@@ -68,14 +68,13 @@ where
     ///
     /// # TODO
     ///
-    /// Buffering is currently unbounded and does not apply timeouts. This must be
-    /// changed.
+    /// Buffering is does not apply timeouts.
     fn bind_service(&mut self, key: &Self::Key) -> Result<Self::Service, Self::RouteError> {
         let &(ref addr, ref proto) = key;
         debug!("building inbound {:?} client to {}", proto, addr);
 
         let endpoint = (*addr).into();
-        let binding = self.bind.new_binding(&endpoint, proto);
+        let binding = self.bind.new_bound_service(&endpoint, proto);
         Buffer::new(binding, self.bind.executor())
             .map(|buffer| {
                 InFlightLimit::new(buffer, MAX_IN_FLIGHT)
